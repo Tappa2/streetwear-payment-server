@@ -1,0 +1,6 @@
+.env
+.env.*
+node_modules/
+service-account*.json
+firebase-service-account*.json
+server.js.before-auth-backup
