@@ -29,6 +29,7 @@ function initializeFirebase() {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    projectId: serviceAccount.project_id || 'sarisari-store-c63ee',
   });
 }
 
