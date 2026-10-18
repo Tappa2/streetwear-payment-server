@@ -1,145 +1,220 @@
+
 const http = require('http');
 const admin = require('firebase-admin');
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = '0.0.0.0';
 
-const server = http.createServer(async (req, res) => {
-  res.setHeader('Content-Type', 'application/json');
+const allowedOrigins = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://0.0.0.0:8080',
+];
 
+function sendJson(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
+
+function initializeFirebase() {
+  if (admin.apps.length > 0) return;
+
+  const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+  if (!json) {
+    throw new Error('Firebase service account is not configured');
+  }
+
+  const serviceAccount = JSON.parse(json);
+
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+}
+
+async function readBody(req) {
+  let body = '';
+
+  for await (const chunk of req) {
+    body += chunk;
+
+    if (body.length > 10000) {
+      throw new Error('REQUEST_TOO_LARGE');
+    }
+  }
+
+  return JSON.parse(body || '{}');
+}
+
+const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
-  const allowedOrigins = [
-    'http://localhost:8080',
-    'http://127.0.0.1:8080',
-    'http://0.0.0.0:8080',
-  ];
 
   if (allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
 
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET, POST, OPTIONS'
+  );
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200);
-    return res.end(JSON.stringify({
+  const pathname = new URL(
+    req.url,
+    'http://localhost'
+  ).pathname;
+
+  // Health check: does not require Firebase login.
+  if (req.method === 'GET' && pathname === '/health') {
+    return sendJson(res, 200, {
       ok: true,
-      mode: 'local-test-server'
-    }));
+      service: 'streetwear-payment-server',
+      mode: 'test',
+    });
   }
 
-  if (req.method !== 'POST' || req.url !== '/create-invoice') {
-    res.writeHead(404);
-    return res.end(JSON.stringify({ error: 'Not found' }));
+  if (req.method !== 'POST' || pathname !== '/create-invoice') {
+    return sendJson(res, 404, {
+      error: 'Not found',
+      availableRoutes: [
+        'GET /health',
+        'POST /create-invoice',
+      ],
+    });
   }
 
-  // Require a valid Firebase ID token before creating invoices.
+  // Verify Firebase authentication before creating an invoice.
+  const authorization = req.headers.authorization || '';
+
+  if (!authorization.startsWith('Bearer ')) {
+    return sendJson(res, 401, {
+      error: 'Sign-in required. Please log in first.',
+    });
+  }
+
   try {
-    const header = req.headers.authorization || '';
-    if (!header.startsWith('Bearer ')) {
-      res.writeHead(401);
-      return res.end(JSON.stringify({ error: 'Sign-in required' }));
-    }
+    initializeFirebase();
 
-    const serviceAccountText = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    if (!serviceAccountText) {
-      res.writeHead(503);
-      return res.end(JSON.stringify({ error: 'Server authentication is not configured' }));
-    }
-
-    if (admin.apps.length === 0) {
-      const serviceAccount = JSON.parse(serviceAccountText);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-    }
-
-    await admin.auth().verifyIdToken(header.substring(7));
+    const idToken = authorization.slice(7);
+    await admin.auth().verifyIdToken(idToken);
   } catch (error) {
     console.error('Firebase authentication failed:', error.message);
-    res.writeHead(401);
-    return res.end(JSON.stringify({ error: 'Invalid or expired sign-in token' }));
+
+    return sendJson(res, 401, {
+      error: 'Invalid or expired Firebase sign-in token',
+    });
   }
 
   const key = process.env.XENDIT_SECRET_KEY;
+
   if (!key || !key.startsWith('xnd_development_')) {
-    res.writeHead(500);
-    return res.end(JSON.stringify({
-      error: 'Missing test key. Use an Xendit TEST secret key.'
-    }));
+    return sendJson(res, 503, {
+      error: 'Xendit test secret key is missing or has the wrong format',
+    });
+  }
+
+  let input;
+
+  try {
+    input = await readBody(req);
+  } catch (error) {
+    if (error.message === 'REQUEST_TOO_LARGE') {
+      return sendJson(res, 413, {
+        error: 'Request is too large',
+      });
+    }
+
+    return sendJson(res, 400, {
+      error: 'Invalid JSON request body',
+    });
+  }
+
+  const amount = Number(input.amount);
+
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    amount > 1000000
+  ) {
+    return sendJson(res, 400, {
+      error: 'Invalid invoice amount',
+    });
   }
 
   try {
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 10000) {
-        res.writeHead(413);
-        return res.end(JSON.stringify({ error: 'Request too large' }));
+    const response = await fetch(
+      'https://api.xendit.co/v2/invoices',
+      {
+        method: 'POST',
+        headers: {
+          Authorization:
+            'Basic ' +
+            Buffer.from(key + ':').toString('base64'),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          external_id: 'streetwear-test-' + Date.now(),
+          amount: Math.round(amount * 100) / 100,
+          currency: 'PHP',
+          description: 'Streetwear school project test invoice',
+          invoice_duration: 86400,
+          payer_email:
+            typeof input.email === 'string'
+              ? input.email.slice(0, 254)
+              : undefined,
+        }),
       }
-    }
-
-    const input = JSON.parse(body || '{}');
-    const amount = Number(input.amount);
-
-    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) {
-      res.writeHead(400);
-      return res.end(JSON.stringify({ error: 'Invalid amount' }));
-    }
-
-    const response = await fetch('https://api.xendit.co/v2/invoices', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Basic ' +
-          Buffer.from(key + ':').toString('base64'),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        external_id: 'streetwear-demo-' + Date.now(),
-        amount: Math.round(amount * 100) / 100,
-        currency: 'PHP',
-        description: 'Streetwear school project - test payment',
-        invoice_duration: 86400,
-        payer_email: typeof input.email === 'string'
-          ? input.email.slice(0, 254)
-          : undefined,
-      }),
-    });
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error('Xendit API returned HTTP', response.status);
-      res.writeHead(502);
-      return res.end(JSON.stringify({
-        error: 'Xendit rejected the request',
-        details: data.message || data.error_code || 'Check test key and API permissions',
-      }));
+      console.error(
+        'Xendit API error:',
+        response.status,
+        data.error_code || data.message || 'Unknown error'
+      );
+
+      return sendJson(res, 502, {
+        error: 'Xendit could not create the test invoice',
+        details:
+          data.message ||
+          data.error_code ||
+          'Check the test key and Xendit account settings',
+      });
     }
 
-    res.writeHead(200);
-    return res.end(JSON.stringify({
+    return sendJson(res, 200, {
       success: true,
       invoiceId: data.id,
       invoiceUrl: data.invoice_url,
       status: data.status,
       mode: 'test',
-    }));
+    });
   } catch (error) {
     console.error('Invoice request failed:', error.message);
-    res.writeHead(500);
-    return res.end(JSON.stringify({ error: 'Could not create test invoice' }));
+
+    return sendJson(res, 500, {
+      error: 'Could not create the test invoice',
+    });
   }
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Local Xendit test server: http://${HOST}:${PORT}`);
-  console.log('Test key loaded:', Boolean(process.env.XENDIT_SECRET_KEY));
+  console.log(`Streetwear payment server listening on ${PORT}`);
+  console.log('Xendit test key configured:', Boolean(
+    process.env.XENDIT_SECRET_KEY
+  ));
+  console.log('Firebase service account configured:', Boolean(
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+  ));
 });
