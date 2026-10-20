@@ -108,7 +108,7 @@ const server = http.createServer(async (req, res) => {
     const idToken = authorization.slice(7);
     await admin.auth().verifyIdToken(idToken);
   } catch (error) {
-    console.error('Firebase authentication failed:', error.message);
+    console.error('Firebase authentication failed:', error.stack || error.message);
 
     return sendJson(res, 401, {
       error: 'Invalid or expired Firebase sign-in token',
