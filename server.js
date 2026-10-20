@@ -51,6 +51,14 @@ async function readBody(req) {
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
 
+  console.log(
+    'Incoming request:',
+    req.method,
+    req.url,
+    'origin:',
+    origin || '(none)'
+  );
+
   if (allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
