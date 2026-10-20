@@ -1,6 +1,7 @@
 
 const http = require('http');
-const admin = require('firebase-admin');
+const { initializeApp, getApps, cert } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
 
 const PORT = Number(process.env.PORT || 3001);
 const HOST = '0.0.0.0';
@@ -17,7 +18,7 @@ function sendJson(res, status, data) {
 }
 
 function initializeFirebase() {
-  if (admin.apps.length > 0) return;
+  if (getApps().length > 0) return;
 
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
@@ -27,8 +28,8 @@ function initializeFirebase() {
 
   const serviceAccount = JSON.parse(json);
 
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+  initializeApp({
+    credential: cert(serviceAccount),
     projectId: serviceAccount.project_id || 'sarisari-store-c63ee',
   });
 }
@@ -106,7 +107,7 @@ const server = http.createServer(async (req, res) => {
     initializeFirebase();
 
     const idToken = authorization.slice(7);
-    await admin.auth().verifyIdToken(idToken);
+    await getAuth().verifyIdToken(idToken);
   } catch (error) {
     console.error('Firebase authentication failed:', error.stack || error.message);
 
