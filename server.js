@@ -12,6 +12,18 @@ const allowedOrigins = [
   'http://0.0.0.0:8080',
 ];
 
+function isAllowedOrigin(origin) {
+  if (allowedOrigins.includes(origin)) return true;
+
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' &&
+      ['localhost', '127.0.0.1', '0.0.0.0'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function sendJson(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
@@ -59,7 +71,7 @@ const server = http.createServer(async (req, res) => {
     origin || '(none)'
   );
 
-  if (allowedOrigins.includes(origin)) {
+  if (isAllowedOrigin(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
